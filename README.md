@@ -14,25 +14,37 @@ The project starts with a secure offline emergency communication core and increm
 
 ## Key Features
 
-- Offline-first local communication
-- Secure real-time messaging
-- Emergency broadcast
-- SOS and incident management
-- Safety check-in
-- Role-based access control
-- GPS/location sharing where connectivity permits
-- Offline-capable maps and GIS
-- Shelter and rescue-team coordination
-- Flood and environmental monitoring
-- Edge/local-server operation
-- Store-and-forward synchronization
-- Mesh networking
-- LoRa-based low-bandwidth telemetry where appropriate
-- Portable solar-powered communication nodes
-- UAV/drone communication relay and situational awareness
-- Optional commercial satellite Internet backhaul
-- Network, sensor, and node health monitoring
-- Security auditing and threat modeling
+Audit fix (9): every feature below is marked honestly. Only Phases
+0–3 have code; everything else is a roadmap plan, not a shipped
+feature. Reading the old unmarked list, a reader could reasonably
+believe mesh, LoRa, UAV and satellite support already existed.
+
+- [Implemented] Offline-first local communication
+- [Implemented] Secure real-time messaging (TLS in transit only;
+  no end-to-end encryption yet — see docs/SECURITY.md)
+- [Implemented] Emergency broadcast (signed, Phase 3)
+- [Implemented] SOS and incident management
+- [Implemented] Safety check-in
+- [Implemented] Role-based access control
+- [Implemented] GPS/location sharing where connectivity permits
+  (SOS coordinates)
+- [Planned — Phase 6] Offline-capable maps and GIS
+- [Planned — Phase 6] Shelter coordination
+- [Implemented] Rescue-team coordination (SOS, broadcasts, check-ins)
+- [Planned — Phase 7] Flood and environmental monitoring (sensors)
+- [Implemented] Edge/local-server operation
+- [Implemented] Store-and-forward synchronization (local pending
+  queue; multi-node sync is Phase 8)
+- [Planned — Phase 8] Mesh networking
+- [Planned — Phase 7/8] LoRa-based low-bandwidth telemetry
+  where appropriate
+- [Planned — Phase 9] Portable solar-powered communication nodes
+- [Planned — Phase 10] UAV/drone communication relay and
+  situational awareness
+- [Planned — Phase 11] Optional commercial satellite Internet backhaul
+- [Planned — Phase 7/8] Network, sensor, and node health monitoring
+- [Implemented] Security auditing and threat modeling
+  (audit log, Phase 3 threat model; no formal penetration test yet)
 
 ---
 
@@ -415,10 +427,12 @@ Each major security mechanism should be mapped to the threat it mitigates.
 ### Backend
 
 - Python
-- FastAPI / Flask
+- FastAPI (no Flask code exists in this repository)
 - WebSocket
-- PostgreSQL
-- SQLite for appropriate edge/local storage
+- SQLite by default (single-server deployment)
+- PostgreSQL via `NIRAPODNET_DB` (supported by the engine setup;
+  there is no Alembic migration system yet, only `create_all`
+  plus small hand-written migrations — see docs/SECURITY.md)
 
 ### Frontend
 
@@ -644,7 +658,42 @@ This staged approach keeps the system testable, measurable, and resilient while 
 
 NirapodNet can run on a local network without Internet access.
 
-### 1. Start the server
+> **Security warning — read before using plain HTTP (audit fix 1).**
+> The default below serves plain HTTP. On a trusted home LAN that
+> is acceptable for a test, but passwords and session tokens then
+> travel unencrypted: on an open network, or through a compromised
+> access point, anyone on the LAN can capture them, even though
+> the Wi-Fi itself may be encrypted. For any real deployment, use
+> the HTTPS steps in "Run on LAN over HTTPS" below. The server
+> also prints this warning at startup unless `NIRAPODNET_HTTPS=1`
+> is set (which must only be set when TLS really is in front).
+
+### Run on LAN over HTTPS
+
+Generate a self-signed certificate for the host computer's LAN IP
+(self-signed means browsers will show a warning you must accept
+once; it still encrypts the traffic, which is the point here):
+
+```bash
+openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem \
+  -days 365 -nodes -subj "/CN=192.168.1.10"
+```
+
+Replace `192.168.1.10` with the host's real LAN IP, then start
+with TLS and set the flag that silences the startup warning:
+
+```bash
+NIRAPODNET_HTTPS=1 uvicorn app.main:app --host 0.0.0.0 --port 8000 \
+  --ssl-certfile cert.pem --ssl-keyfile key.pem
+```
+
+Then open `https://192.168.1.10:8000` (not `http://`). The
+frontend already switches to `wss:` over HTTPS, so WebSocket
+traffic is encrypted too. For a deployment beyond a trusted LAN,
+use a certificate from a real certificate authority instead of
+a self-signed one.
+
+### 1. Start the server (plain HTTP, trusted LAN only)
 
 Activate the virtual environment, then run:
 

@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
+import asyncio
 import json
 import os
 import sqlite3
@@ -81,6 +82,64 @@ async def security_headers_middleware(request: Request, call_next):
     return response
 
 
+@app.on_event("startup")
+async def _warn_plain_http():
+    # Audit fix (1): plain HTTP is the LAN default, so the warning
+    # must be visible at startup, not only in README. The server
+    # cannot tell from inside the app whether uvicorn was given
+    # --ssl-certfile, so NIRAPODNET_HTTPS=1 is the explicit opt-out:
+    # set it when (and only when) the server really runs behind TLS.
+    if os.environ.get("NIRAPODNET_HTTPS") != "1":
+        print(
+            "WARNING: NirapodNet is running over plain HTTP. "
+            "Passwords and session tokens travel unencrypted on "
+            "the LAN. Use only a trusted LAN, or run with TLS: "
+            "see README 'Run on LAN over HTTPS'."
+        )
+
+
+def _pagination(limit: int, offset: int):
+    # Audit fix (4): one place for the list bounds, so no list
+    # endpoint can silently return every row again.
+    return max(1, min(limit, 500)), max(0, offset)
+
+
+def _check_register_rate_limit(request: Request):
+    # Audit fix (2): open registration was unlimited, so anyone on
+    # the LAN could spam accounts. Default 30/hour per IP, env
+    # tunable (NIRAPODNET_REGISTER_RATE_LIMIT); the same key is
+    # used by POST /users and POST /api/register, so spamming
+    # through the legacy path does not bypass it.
+    limit = int(os.environ.get("NIRAPODNET_REGISTER_RATE_LIMIT", "30"))
+    if not limiter.allow(f"register:{_client_ip(request)}", limit, 3600):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many registrations from this address",
+            headers={"Retry-After": "3600"},
+        )
+
+
+def _session_still_valid(db: Session, token_hash: str) -> bool:
+    # Audit fix (10): a WebSocket must not outlive its session.
+    # Checked on every message, not only at connect time, so
+    # logout, expiry and role-change revocation all cut a live
+    # connection at the next message. expire_all() first: the
+    # session behind a long-lived socket was loaded in this
+    # DB session, and logout deletes the row through another
+    # DB session, so without expiring the identity map the
+    # check would keep seeing the stale, deleted row.
+    db.expire_all()
+    session = (
+        db.query(UserSession)
+        .filter(UserSession.token == token_hash)
+        .first()
+    )
+    if session is None:
+        return False
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    return session.expires_at > now
+
+
 def _client_ip(request: Request) -> str:
     # TestClient and direct LAN clients have no trusted proxy
     # in front of them, so X-Forwarded-For is never trusted:
@@ -140,7 +199,7 @@ def _save_idempotency(db: Session, user: User, endpoint: str, key,
     )
 
 
-def _sign_broadcast(db: Session, created):
+def _sign_broadcast(db: Session, created, commit: bool = True):
     """Sign a broadcast and persist its signature."""
     canonical = broadcast_canonical_string(
         created.id,
@@ -151,8 +210,11 @@ def _sign_broadcast(db: Session, created):
         created.created_at.isoformat(),
     )
     created.signature = sign_broadcast(canonical)
-    db.commit()
-    db.refresh(created)
+    if commit:
+        db.commit()
+        db.refresh(created)
+    else:
+        db.flush()
     return created
 
 # Create SQLite tables on startup
@@ -293,9 +355,13 @@ def api_status():
 
 @app.post("/users", response_model=schemas.UserResponse)
 def create_user(
+    request: Request,
     user: schemas.UserCreate,
     db: Session = Depends(get_db)
 ):
+    # Legacy Phase 1 path, kept working (Phase 1 regression test)
+    # but rate-limited exactly like /api/register; see docs/API.md.
+    _check_register_rate_limit(request)
     return crud.create_user(db, user)
 
 
@@ -305,9 +371,11 @@ def create_user(
     status_code=201,
 )
 def register_user(
+    request: Request,
     user: schemas.UserCreate,
     db: Session = Depends(get_db),
 ):
+    _check_register_rate_limit(request)
     existing = (
         db.query(User)
         .filter(User.username == user.username)
@@ -394,6 +462,68 @@ def logout_user(
 
 
 @app.get(
+    "/api/sessions",
+    response_model=list[schemas.SessionResponse],
+)
+def list_sessions(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Audit fix (10): list your own live sessions.
+
+    There is no device name stored (the schema never had one),
+    so a session is identified only by its expiry and the first
+    8 characters of its token hash. That is enough to count
+    sessions and to revoke all others with the endpoint below.
+    """
+    return [
+        {
+            "token_preview": session.token[:8],
+            "expires_at": session.expires_at,
+        }
+        for session in crud.list_sessions(db, current_user.id)
+    ]
+
+
+@app.delete("/api/sessions")
+def revoke_other_sessions(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Revoke every session of yours except the current one."""
+    revoked = crud.delete_other_sessions(
+        db,
+        current_user.id,
+        hash_session_token(credentials.credentials),
+    )
+    return {"revoked_sessions": revoked}
+
+
+@app.post("/api/ws-ticket")
+def create_ws_ticket(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    current_user: User = Depends(get_current_user),
+):
+    """Issue a one-time WebSocket ticket (audit fix 3).
+
+    The frontend exchanges its Bearer token for this ticket and
+    connects with /ws?ticket=... instead of /ws?token=... . The
+    ticket is single-use and expires in 60 seconds, so a ticket
+    that lands in an access log is already useless. The old
+    /ws?token= path still works for Phase 1/2 clients, but the
+    frontend no longer uses it.
+    """
+    return {
+        "ticket": issue_ws_ticket(
+            current_user.id,
+            hash_session_token(credentials.credentials),
+        ),
+        "expires_in_seconds": 60,
+    }
+
+
+@app.get(
     "/api/me",
     response_model=schemas.UserResponse,
 )
@@ -408,12 +538,15 @@ def get_me(
     response_model=list[schemas.UserResponse],
 )
 def list_users(
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
     current_user: User = Depends
     (require_role("admin")
      ),
 ):
-    return crud.get_users(db)
+    limit, offset = _pagination(limit, offset)
+    return crud.get_users(db, limit=limit, offset=offset)
 
 
 @app.get(
@@ -421,10 +554,13 @@ def list_users(
     response_model=list[schemas.UserResponse],
 )
 def list_admin_users(
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role(ADMIN_ROLE)),
 ):
-    return crud.get_users(db)
+    limit, offset = _pagination(limit, offset)
+    return crud.get_users(db, limit=limit, offset=offset)
 
 
 @app.patch(
@@ -456,14 +592,14 @@ def update_user_role(
         )
 
     user.role = role_update.role
-
-    db.commit()
-    db.refresh(user)
+    db.flush()
 
     # Phase 3: a token issued under the old role must not keep
     # working. All of this user's sessions are invalidated, so
     # the user must log in again under the new role.
-    crud.delete_sessions_for_user(db, user.id)
+    # Audit fix (10): role change, session invalidation and the
+    # audit entry now commit together, not in three commits.
+    crud.delete_sessions_for_user(db, user.id, commit=False)
 
     crud.log_audit(
         db,
@@ -472,7 +608,11 @@ def update_user_role(
         entity_type="user",
         entity_id=str(user.id),
         detail=f"{user.username} role set to {user.role}",
+        commit=False,
     )
+
+    db.commit()
+    db.refresh(user)
 
     return user
 
@@ -586,27 +726,15 @@ def create_message(
 
 @app.get("/messages", response_model=list[schemas.MessageResponse])
 def list_messages(
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-
-    messages = (
-        db.query(Message)
-        .order_by(Message.timestamp.asc())
-        .all()
-    )
-
-    return [
-        {
-            "id": message.id,
-            "client_id": message.client_id,
-            "sender_id": message.sender_id,
-            "sender": message.sender.username,
-            "content": message.content,
-            "timestamp": message.timestamp.isoformat(),
-        }
-        for message in messages
-    ]
+    # Audit fix (4): bounded list, and crud.get_messages loads the
+    # sender with joinedload instead of one query per message.
+    limit, offset = _pagination(limit, offset)
+    return crud.get_messages(db, limit=limit, offset=offset)
 
 
 @app.post(
@@ -641,6 +769,7 @@ async def create_sos(
         db=db,
         user_id=current_user.id,
         sos=sos,
+        commit=False,
     )
 
     crud.log_audit(
@@ -650,7 +779,14 @@ async def create_sos(
         entity_type="sos",
         entity_id=incident.incident_id,
         detail=f"emergency_type={incident.emergency_type}",
+        commit=False,
     )
+
+    # Audit fix (10): incident + audit commit together; the live
+    # broadcast is sent only after that commit, so a crash cannot
+    # leave a broadcast for an SOS that was never stored.
+    db.commit()
+    db.refresh(incident)
 
     await broadcast_sos(
         db,
@@ -694,6 +830,8 @@ def list_sos(
         default=None,
         alias="status",
     ),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
     current_user: User = Depends(
         require_role(
@@ -720,9 +858,12 @@ def list_sos(
             detail="Invalid SOS status",
         )
 
+    limit, offset = _pagination(limit, offset)
     return crud.get_sos_events(
         db,
         status_filter=status_filter,
+        limit=limit,
+        offset=offset,
     )
 
 
@@ -792,6 +933,7 @@ async def update_sos_status(
         incident=incident,
         new_status=update.status,
         changed_by=current_user.id,
+        commit=False,
     )
 
     if updated is None:
@@ -807,7 +949,11 @@ async def update_sos_status(
         entity_type="sos",
         entity_id=updated.incident_id,
         detail=f"status set to {updated.status}",
+        commit=False,
     )
+
+    db.commit()
+    db.refresh(updated)
 
     await broadcast_sos(
         db,
@@ -829,19 +975,17 @@ async def broadcast_sos(
     db: Session,
     message: dict,
 ):
+    # Audit fix (4): recipients are fetched in one query, not one
+    # per live connection.
     disconnected = []
+    user_ids = list(manager.active_connections.values())
+    recipients = {
+        user.id: user.role
+        for user in db.query(User).filter(User.id.in_(user_ids)).all()
+    } if user_ids else {}
 
     for connection, user_id in manager.active_connections.items():
-        recipient = (
-            db.query(User)
-            .filter(User.id == user_id)
-            .first()
-        )
-
-        if recipient is None:
-            continue
-
-        if recipient.role not in {
+        if recipients.get(user_id) not in {
             "rescue",
             "responder",
             "operator",
@@ -900,10 +1044,11 @@ async def create_broadcast(
         db,
         issued_by=current_user.id,
         broadcast=broadcast,
+        commit=False,
     )
 
     # Phase 3: sign the broadcast before it is delivered.
-    created = _sign_broadcast(db, created)
+    created = _sign_broadcast(db, created, commit=False)
 
     crud.log_audit(
         db,
@@ -915,7 +1060,13 @@ async def create_broadcast(
             f"type={created.type} "
             f"priority={created.priority}"
         ),
+        commit=False,
     )
+
+    # Audit fix (10): broadcast + signature + audit commit
+    # together; delivery happens only after that commit.
+    db.commit()
+    db.refresh(created)
 
     await broadcast_alert(
         {
@@ -947,12 +1098,17 @@ async def create_broadcast(
 )
 def list_broadcasts(
     after_id: int | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    limit, offset = _pagination(limit, offset)
     return crud.get_broadcasts(
         db,
         after_id=after_id,
+        limit=limit,
+        offset=offset,
     )
 
 
@@ -1026,6 +1182,7 @@ def create_checkin(
         db,
         user_id=current_user.id,
         checkin=checkin,
+        commit=False,
     )
 
     if created is None:
@@ -1041,7 +1198,10 @@ def create_checkin(
         entity_type="checkin",
         entity_id=str(created["id"]),
         detail=f"status={created['status']}",
+        commit=False,
     )
+
+    db.commit()
 
     body = schemas.CheckInResponse.model_validate(
         created
@@ -1059,12 +1219,17 @@ def create_checkin(
     response_model=list[schemas.CheckInResponse],
 )
 def list_my_checkins(
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    limit, offset = _pagination(limit, offset)
     return crud.get_user_checkins(
         db,
         user_id=current_user.id,
+        limit=limit,
+        offset=offset,
     )
 
 
@@ -1091,6 +1256,8 @@ def get_checkin_summary(
     response_model=list[schemas.CheckInResponse],
 )
 def list_checkins(
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
     current_user: User = Depends(
         require_role(
@@ -1101,7 +1268,75 @@ def list_checkins(
         )
     ),
 ):
-    return crud.get_checkins(db)
+    limit, offset = _pagination(limit, offset)
+    return crud.get_checkins(db, limit=limit, offset=offset)
+
+
+# -----------------------
+# Admin Backup API
+# -----------------------
+
+@app.get("/api/admin/backup")
+def download_backup(
+    current_user: User = Depends(require_role(ADMIN_ROLE)),
+):
+    """Audit fix (5): download a consistent SQLite backup.
+
+    A plain copy of nirapodnet.db while the server runs can miss
+    WAL data. This uses SQLite's online backup API into a temp
+    file, so the download is a consistent snapshot. PostgreSQL
+    deployments must use pg_dump instead (this endpoint says so
+    rather than silently handing out a wrong file), and an
+    in-memory database has nothing to back up.
+    """
+    if not DATABASE_URL.startswith("sqlite"):
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Backup endpoint is SQLite-only; "
+            "use pg_dump for PostgreSQL",
+        )
+
+    source_path = DATABASE_URL[len("sqlite:///"):]
+    if not source_path or source_path == ":memory:":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="In-memory database has no file to back up",
+        )
+
+    tmp = tempfile.NamedTemporaryFile(
+        suffix=".db", delete=False
+    )
+    tmp_path = tmp.name
+    tmp.close()
+
+    source = sqlite3.connect(f"file:{source_path}?mode=ro", uri=True)
+    try:
+        dest = sqlite3.connect(tmp_path)
+        try:
+            source.backup(dest)
+        finally:
+            dest.close()
+    finally:
+        source.close()
+
+    filename = (
+        "nirapodnet-backup-"
+        + datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        + ".db"
+    )
+
+    def _cleanup(path: str):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+    return FileResponse(
+        tmp_path,
+        media_type="application/octet-stream",
+        filename=filename,
+        background=BackgroundTask(_cleanup, tmp_path),
+    )
 
 
 # -----------------------
@@ -1131,35 +1366,102 @@ def list_audit_logs(
 @app.websocket("/ws")
 async def websocket_endpoint(
     websocket: WebSocket,
-    token: str = Query(...),
+    token: str | None = Query(default=None),
+    ticket: str | None = Query(default=None),
 ):
+    """Live chat socket.
+
+    Audit fix (3): prefer a one-time ticket
+    (POST /api/ws-ticket, then /ws?ticket=...) over the session
+    token in the URL. The token query still works for Phase 1/2
+    clients, but the frontend no longer sends it.
+    Audit fix (6): disconnect happens in `finally`, so a broken
+    JSON frame or any other error cannot leave a dead connection
+    in active_connections. Audit fix (10): the session behind
+    the connection is re-checked on every message.
+    """
     db = SessionLocal()
+    session_token_hash: str | None = None
+    user = None
 
     try:
-        user = crud.get_session_user(db, token)
+        if ticket is not None:
+            payload = redeem_ws_ticket(ticket)
+            if payload is not None:
+                session_token_hash = payload["session_token_hash"]
+                candidate = (
+                    db.query(User)
+                    .filter(User.id == payload["user_id"])
+                    .first()
+                )
+                if (
+                    candidate is not None
+                    and _session_still_valid(db, session_token_hash)
+                ):
+                    user = candidate
+        elif token is not None:
+            session_token_hash = hash_session_token(token)
+            user = crud.get_session_user(db, token)
 
         if user is None:
             await websocket.close(code=1008)
             return
 
-        await manager.connect(
-            websocket,
-            user.id,
-        )
+        await manager.connect(websocket, user.id)
 
-        # Phase 3: optional per-connection replay protection.
-        # seq/ts are optional so Phase 1/2 clients that send
-        # only client_id+content keep working; when a client
-        # does send them, they are enforced strictly.
         last_seq: int | None = None
 
         while True:
-            data = await websocket.receive_json()
+            # Session validity is checked before every message,
+            # so logout / expiry / role-change revocation cuts
+            # this connection at the next message, not never.
+            if not _session_still_valid(db, session_token_hash):
+                await websocket.close(code=1008)
+                break
+
+            try:
+                # Audit fix (10): a live socket must also die
+                # when its session expires while it is idle, not
+                # only at the next message. Waiting at most 30
+                # seconds per receive lets the loop come back to
+                # the session check above even with no traffic.
+                data = await asyncio.wait_for(
+                    websocket.receive_json(), timeout=30
+                )
+            except WebSocketDisconnect:
+                break
+            except asyncio.TimeoutError:
+                continue
+            except Exception:
+                # Audit fix (6): a broken JSON frame is an error
+                # frame, not a leaked connection and not a crash
+                # of the whole handler.
+                try:
+                    await websocket.send_json({
+                        "type": "error",
+                        "error": "Invalid message",
+                    })
+                except Exception:
+                    break
+                continue
+
+            # Re-check after the receive, not only before it:
+            # logout can land while this loop is blocked waiting
+            # for a frame, and that frame must not be processed
+            # and acked after the session is already gone.
+            if not _session_still_valid(db, session_token_hash):
+                await websocket.close(code=1008)
+                break
+
+            if not isinstance(data, dict):
+                await websocket.send_json({
+                    "type": "error",
+                    "error": "Invalid message",
+                })
+                continue
 
             # Phase 3: 30 messages per 10 seconds per connection.
-            if not limiter.allow(
-                f"ws:{id(websocket)}", 30, 10
-            ):
+            if not limiter.allow(f"ws:{id(websocket)}", 30, 10):
                 await websocket.send_json({
                     "type": "error",
                     "error": "Rate limit exceeded",
@@ -1169,9 +1471,6 @@ async def websocket_endpoint(
             client_id = data.get("client_id")
             content = data.get("content")
 
-            # Mirror the REST MessageCreate limits so the WebSocket
-            # path cannot store values the API schema would reject
-            # (content 1-2000 chars, client_id 1-100 chars).
             if (
                 not isinstance(client_id, str)
                 or not isinstance(content, str)
@@ -1184,9 +1483,6 @@ async def websocket_endpoint(
                 })
                 continue
 
-            # Phase 3 replay checks, only when the client sends
-            # these fields. Control characters are also rejected
-            # here, matching the REST schema validators.
             from .security import contains_control_characters
 
             if contains_control_characters(content):
@@ -1198,25 +1494,20 @@ async def websocket_endpoint(
 
             if "seq" in data:
                 seq = data.get("seq")
-
                 if (
                     not isinstance(seq, int)
                     or isinstance(seq, bool)
-                    or (
-                        last_seq is not None and seq <= last_seq
-                    )
+                    or (last_seq is not None and seq <= last_seq)
                 ):
                     await websocket.send_json({
                         "type": "error",
                         "error": "Stale or replayed sequence",
                     })
                     continue
-
                 last_seq = seq
 
             if "ts" in data:
                 ts = data.get("ts")
-
                 if (
                     not isinstance(ts, (int, float))
                     or isinstance(ts, bool)
@@ -1243,7 +1534,7 @@ async def websocket_endpoint(
                     "client_id": client_id,
                     "message_id": existing.id,
                     "sender_id": existing.sender_id,
-                    "sender": existing.sender.username,
+                    "sender": user.username,
                     "content": existing.content,
                     "timestamp": existing.timestamp.isoformat(),
                 })
@@ -1254,7 +1545,6 @@ async def websocket_endpoint(
                 sender_id=user.id,
                 content=content,
             )
-
             db.add(message)
             db.commit()
             db.refresh(message)
@@ -1281,9 +1571,12 @@ async def websocket_endpoint(
                 },
                 exclude=websocket,
             )
-
     except WebSocketDisconnect:
-        manager.disconnect(websocket)
-
+        pass
     finally:
+        # Audit fix (6): every exit path disconnects. The old code
+        # only disconnected on WebSocketDisconnect, so any other
+        # error left the connection in active_connections until a
+        # broadcast to it failed.
+        manager.disconnect(websocket)
         db.close()

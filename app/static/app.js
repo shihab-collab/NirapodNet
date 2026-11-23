@@ -151,7 +151,7 @@ function savePendingMessages(queue) {
     localStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
 }
 
-function connectWebSocket() {
+async function connectWebSocket() {
 
     wsSeq = 0;
 
@@ -159,8 +159,35 @@ function connectWebSocket() {
         ? "wss:"
         : "ws:";
 
+    // Audit fix (3): do not put the long-lived session token in
+    // the WebSocket URL (it lands in access logs). Exchange it
+    // for a single-use, 60-second ticket first. If the ticket
+    // request fails (for example the session was revoked), fall
+    // back to the normal reconnect path instead of connecting
+    // with a dead or missing credential.
+    let ticket = null;
+
+    try {
+        const ticketResponse = await fetch("/api/ws-ticket", {
+            method: "POST",
+            headers: authHeaders()
+        });
+
+        if (ticketResponse.ok) {
+            const ticketData = await ticketResponse.json();
+            ticket = ticketData.ticket;
+        }
+    } catch (error) {
+        ticket = null;
+    }
+
+    if (!ticket) {
+        reconnect();
+        return;
+    }
+
     socket = new WebSocket(
-        `${protocol}//${window.location.host}/ws?token=${encodeURIComponent(sessionToken)}`
+        `${protocol}//${window.location.host}/ws?ticket=${encodeURIComponent(ticket)}`
     );
 
     const networkStatus = document.getElementById("networkStatus");
