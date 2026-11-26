@@ -212,7 +212,7 @@ was lost and the tree is now clean at `4a07639`.
 ## 2026-11-25 — Phase 3 completion work (Path A, TLS limit accepted)
 
 **Phase:** 3 — Security  
-**Status:** In Progress — all Muse-side work done; LAN WSS test (user) and push still pending, so Phase 3 is NOT marked Completed yet
+**Status:** Completed 2026-11-26 — pushed as commit a0acb24, CI green (Tests run #1, success), LAN WSS test passed 2026-11-25
 
 **Decision (2026-11-25, user chose Path A):** end-to-end encryption is NOT built in Phase 3. The TLS-only limit is accepted and documented as an accepted limitation in docs/SECURITY.md, README.md, PROGRESS.md and ROADMAP.md. If E2E is ever needed, it is a new phase of work. Public-key broadcast signing is likewise deferred — HMAC stays, because the server is the only signer.
 
@@ -228,7 +228,7 @@ was lost and the tree is now clean at `4a07639`.
 - [x] New suite tests/run_phase3_completion_checks.py: 18/18 passed (login_failed, login_rate_limited, rate_limit_hit, CSP header, no style= attributes, docs checks)
 
 ### Decisions Made
-- Phase 3 is NOT marked Completed in this session: the LAN WSS test is a user step that has not happened yet, and the Dockerfile build is unverified until CI runs. Marking it Completed before those would be a false claim.
+- Phase 3 marked Completed 2026-11-26: the LAN WSS test passed (2026-11-25) and CI went green on the pushed commit a0acb24 (Tests run #1, success, 2026-11-26). The Dockerfile build is now verified by CI, not just claimed.
 - Router split is a mechanical move, not a behaviour change: handler code is verbatim, only `@app.*` became `@router.*`. The four suites are the gate.
 
 ### Metrics
@@ -242,8 +242,8 @@ was lost and the tree is now clean at `4a07639`.
 
 ### Next Steps
 - LAN WSS test by the user — done 2026-11-25, passed (see the 2026-11-25 WSS test entry below)
-- Push this work to GitHub (one commit, user's separate permission + approval card) — then CI builds the Docker image and runs all four suites
-- Only after a green CI run: mark Phase 3 Completed in ROADMAP.md and PROGRESS.md
+- Push this work to GitHub — done 2026-11-26, commit a0acb24 (pushed by the user from VS Code; the GitHub App route returned 403)
+- CI green 2026-11-26 (Tests run #1, success) — Phase 3 marked Completed in ROADMAP.md and PROGRESS.md
 - Formal penetration test remains a Phase 4 item
 
 ---
@@ -272,8 +272,8 @@ Server log evidence (same WiFi):
 
 Recorded in docs/SECURITY.md ("Running over TLS (WSS)")
 and in ROADMAP.md (WSS checkbox ticked with the test
-note). Phase 3 is still not marked Completed: the push
-and a green CI run are still pending.
+note). Phase 3 was marked Completed 2026-11-26: pushed
+as a0acb24, CI green (Tests run #1, success).
 
 ---
 
@@ -284,7 +284,7 @@ and a green CI run are still pending.
 | Phase 0 — Foundation | 2026-08-17 | 2026-08-30 | Completed | Repository and environment set up; superseded by Phase 1 completion |
 | Phase 1 — Core Prototype | 2026-08-20 | 2026-08-31 | Completed | 5/5 tests in tests/phase-1 test log; behaviour unchanged by Phase 2 work |
 | Phase 2 — Emergency System | 2026-09-01 | 2026-10-20 | Completed | Broadcast, check-in, dashboard and audit completed 2026-10-20; see tests/phase-2-test-log.md. Broadcast geographic targeting deferred to Phase 6 |
-| Phase 3 — Security | 2026-10-30 | 2026-11-25 | Completed | Security headers, hashed sessions, rate limits, replay protection, HMAC broadcast signing, threat model, audit logging for failed logins/rate limits, CSP without 'unsafe-inline', CI/Dockerfile, router split; Path A (TLS-only, no E2E) accepted; all 4 suites pass (136/136); LAN WSS test passed; CI and push pending |
+| Phase 3 — Security | 2026-10-30 | 2026-11-25 | Completed | Security headers, hashed sessions, rate limits, replay protection, HMAC broadcast signing, threat model, audit logging for failed logins/rate limits, CSP without 'unsafe-inline', CI/Dockerfile, router split; Path A (TLS-only, no E2E) accepted; all 4 suites pass (136/136); LAN WSS test passed; pushed as a0acb24, CI green 2026-11-26 (Tests run #1, success) |
 | Phase 4 — Measurement | - | - | Not Started | - |
 | Phase 5 — First Real Pilot | - | - | Not Started | - |
 | Phase 6 — Geospatial Layer | - | - | Not Started | - |
