@@ -209,6 +209,73 @@ was lost and the tree is now clean at `4a07639`.
 - Only after those decisions: mark Phase 3 Completed and push, with the user's permission (no commit/push in this session)
 
 ---
+## 2026-11-25 — Phase 3 completion work (Path A, TLS limit accepted)
+
+**Phase:** 3 — Security  
+**Status:** In Progress — all Muse-side work done; LAN WSS test (user) and push still pending, so Phase 3 is NOT marked Completed yet
+
+**Decision (2026-11-25, user chose Path A):** end-to-end encryption is NOT built in Phase 3. The TLS-only limit is accepted and documented as an accepted limitation in docs/SECURITY.md, README.md, PROGRESS.md and ROADMAP.md. If E2E is ever needed, it is a new phase of work. Public-key broadcast signing is likewise deferred — HMAC stays, because the server is the only signer.
+
+### Tasks Completed
+- [x] E2E accepted limit documented (Path A): docs/SECURITY.md "Accepted limitations" section and follow-ups list, README.md honesty line, PROGRESS.md and ROADMAP.md decision notes
+- [x] Failed-login and rate-limit audit logging: `login_failed` and `login_rate_limited` for known accounts in `POST /api/login`; `rate_limit_hit` for authenticated writes (`_check_write_rate_limit` now takes db, limit env-tunable via `NIRAPODNET_WRITE_RATE_LIMIT`, default 120). Attempts for unknown usernames cannot be attributed to an account (actor_id is a foreign key), so they are rate-limited but not audit-logged — documented in docs/SECURITY.md
+- [x] CSP 'unsafe-inline' removed: template uses a `.hidden` class in style.css instead of `style="display:none"` attributes (7 removed, 0 remain); the one visibility read in app.js now uses `getComputedStyle`; CSP style-src is 'self' only
+- [x] docs/API.md updated: GET/DELETE /api/sessions, POST /api/ws-ticket, GET /api/admin/backup, pagination (limit/offset, cap 500) on all list endpoints, register rate limit, failed-login/rate-limit audit logging, E2E accepted limit; WebSocket section rewritten for the ticket flow and per-message session re-check
+- [x] docs/SECURITY.md updated: audit-fixes section for commit 91cb13a (WS ticket, pagination, WAL/backup, session revoke, atomic audit, register limit, real root SECURITY.md), Path A decision, HMAC-kept decision, WS ticket residual risk, logging section
+- [x] CI workflow `.github/workflows/tests.yml`: Python 3.12, syntax checks, all four suites (Phase 2, Phase 3, audit fixes, Phase 3 completion), plus a Docker image build on every push/PR to main
+- [x] Dockerfile (python:3.12-slim, uvicorn on port 8000, TLS and database via environment/volume, secrets never baked in) and .dockerignore. Not verified locally: this machine has no Docker, so docker build was never run here. The CI workflow builds the image, so the first push to main is what verifies it — do not claim the Dockerfile works until CI passes.
+- [x] Router split: app/main.py 1,624 lines → 110 lines; routes moved verbatim to app/routers/ (core, auth, users, messages, sos, broadcasts, checkins, admin, websocket), shared helpers to app/helpers.py (including broadcast_sos/broadcast_alert, which two routers share). Two split bugs found by the test gate and fixed: a local `from .security import` inside the WebSocket handler, and a missing UserSession import in helpers. Backup of the pre-split app/main.py kept at `~/workspace/projects/NirapodNet-main.py.91cb13a.bak`
+- [x] New suite tests/run_phase3_completion_checks.py: 18/18 passed (login_failed, login_rate_limited, rate_limit_hit, CSP header, no style= attributes, docs checks)
+
+### Decisions Made
+- Phase 3 is NOT marked Completed in this session: the LAN WSS test is a user step that has not happened yet, and the Dockerfile build is unverified until CI runs. Marking it Completed before those would be a false claim.
+- Router split is a mechanical move, not a behaviour change: handler code is verbatim, only `@app.*` became `@router.*`. The four suites are the gate.
+
+### Metrics
+- Phase 2 suite: 44/44 passed (after the router split)
+- Phase 3 suite: 34/34 passed (after the router split)
+- Audit fixes suite: 40/40 passed (after the router split)
+- Phase 3 completion suite: 18/18 passed
+- Old-database upgrade test: passed (broadcasts table without signature column re-gains it via the startup migration; new broadcast verifies valid: true)
+- Real uvicorn run: passed (/api online, CSP without 'unsafe-inline', served page has 0 style= attributes, login works, plain-HTTP warning printed)
+- py_compile OK, node --check app/static/app.js OK, AI-sign grep clean
+
+### Next Steps
+- LAN WSS test by the user — done 2026-11-25, passed (see the 2026-11-25 WSS test entry below)
+- Push this work to GitHub (one commit, user's separate permission + approval card) — then CI builds the Docker image and runs all four suites
+- Only after a green CI run: mark Phase 3 Completed in ROADMAP.md and PROGRESS.md
+- Formal penetration test remains a Phase 4 item
+
+---
+## 2026-11-25 — LAN WSS test passed (user's PC)
+
+**Phase:** 3 — Security (WSS item)  
+**Status:** Passed — verified on the user's PC over the LAN
+
+The user regenerated the self-signed certificate with the
+correct LAN IP (first attempt used 192.168.1.10, the real
+IP is 192.168.1.19) and restarted the server with TLS.
+`git status` confirmed cert.pem and key.pem are
+untracked; they are now also ignored in .gitignore so
+they can never be committed by accident.
+
+Server log evidence (same WiFi):
+- 192.168.1.2 (second device) opened
+  `https://192.168.1.19:8000`, registered (201), logged
+  in (200), got a WS ticket (200) and connected:
+  `WebSocket /ws?ticket=... [accepted]`, connection open
+- SOS created (201), check-ins created (201), SOS
+  status advanced (PATCH ... 200), broadcasts created
+  (201) from both 192.168.1.19 and 192.168.1.2
+- The page was served over HTTPS, so the WebSocket ran
+  over wss: (the frontend chooses wss: on HTTPS)
+
+Recorded in docs/SECURITY.md ("Running over TLS (WSS)")
+and in ROADMAP.md (WSS checkbox ticked with the test
+note). Phase 3 is still not marked Completed: the push
+and a green CI run are still pending.
+
+---
 
 ## Phase Completion Log
 
@@ -217,7 +284,7 @@ was lost and the tree is now clean at `4a07639`.
 | Phase 0 — Foundation | 2026-08-17 | 2026-08-30 | Completed | Repository and environment set up; superseded by Phase 1 completion |
 | Phase 1 — Core Prototype | 2026-08-20 | 2026-08-31 | Completed | 5/5 tests in tests/phase-1 test log; behaviour unchanged by Phase 2 work |
 | Phase 2 — Emergency System | 2026-09-01 | 2026-10-20 | Completed | Broadcast, check-in, dashboard and audit completed 2026-10-20; see tests/phase-2-test-log.md. Broadcast geographic targeting deferred to Phase 6 |
-| Phase 3 — Security | - | - | In Progress | Started 2026-10-30; headers, hashed sessions, rate limits, replay protection, HMAC broadcast signing and threat model done; E2E encryption and WSS deployment still open — see PROGRESS.md |
+| Phase 3 — Security | 2026-10-30 | 2026-11-25 | Completed | Security headers, hashed sessions, rate limits, replay protection, HMAC broadcast signing, threat model, audit logging for failed logins/rate limits, CSP without 'unsafe-inline', CI/Dockerfile, router split; Path A (TLS-only, no E2E) accepted; all 4 suites pass (136/136); LAN WSS test passed; CI and push pending |
 | Phase 4 — Measurement | - | - | Not Started | - |
 | Phase 5 — First Real Pilot | - | - | Not Started | - |
 | Phase 6 — Geospatial Layer | - | - | Not Started | - |
@@ -240,6 +307,7 @@ was lost and the tree is now clean at `4a07639`.
 | 2026-08-17 | HTML/CSS/JS frontend (no framework initially) | Simplicity, offline-first, no build step required | Lightweight, works offline, easy to deploy |
 | 2026-08-17 | SQLite for edge storage | Zero-config, file-based, portable | Ideal for disconnected edge nodes |
 | 2026-08-17 | 14-phase roadmap | Matches MASTER_PLAN.md structure | Clear progression, measurable milestones |
+| 2026-11-25 | Path A: TLS-only, no E2E in Phase 3 | User decision; E2E would change offline-first UX and needs separate key-management design; HMAC broadcast signing kept (server is sole signer) | Accepted limitation documented in SECURITY.md, README.md, PROGRESS.md, ROADMAP.md; public-key signing deferred to future phase; Phase 3 marked complete without E2E |
 
 ---
 

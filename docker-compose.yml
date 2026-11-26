@@ -1,0 +1,30 @@
+# NirapodNet - Docker Compose for easy deployment
+# Usage:
+#   docker compose up -d                    # plain HTTP (LAN)
+#   docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d  # with TLS
+#   docker compose down                     # stop & remove
+#
+# First run: copy .env.example to .env and fill in
+# NIRAPODNET_SIGNING_KEY (openssl rand -hex 32) and the admin
+# password. The signing key has NO default on purpose: a
+# publicly known default would let anyone forge broadcast
+# signatures. Compose will stop with an error if it is unset.
+
+services:
+  app:
+    build: .
+    container_name: nirapodnet
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - nirapodnet-data:/app/data
+    environment:
+      - NIRAPODNET_DB=sqlite:////app/data/nirapodnet.db
+      - NIRAPODNET_SIGNING_KEY=${NIRAPODNET_SIGNING_KEY:?Set NIRAPODNET_SIGNING_KEY in .env (generate with: openssl rand -hex 32)}
+    env_file:
+      - path: .env
+        required: false
+
+volumes:
+  nirapodnet-data:

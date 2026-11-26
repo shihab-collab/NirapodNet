@@ -1,0 +1,23 @@
+# TLS override - use with: docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d
+# Place your cert.pem and key.pem in ./certs/ or mount from elsewhere
+
+services:
+  app:
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./certs/cert.pem:/app/cert.pem:ro
+      - ./certs/key.pem:/app/key.pem:ro
+    environment:
+      - NIRAPODNET_HTTPS=1
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - 8000
+      - --ssl-certfile
+      - /app/cert.pem
+      - --ssl-keyfile
+      - /app/key.pem

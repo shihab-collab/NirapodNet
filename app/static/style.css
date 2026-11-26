@@ -4,6 +4,15 @@ body {
     background: #f4f4f4;
 }
 
+/* Phase 3 completion: show/hide is done with this class, not
+   with inline style="display:none" attributes, so the CSP no
+   longer needs 'unsafe-inline'. No !important here on purpose:
+   the JavaScript show/hide code sets element.style.display,
+   which must still win over this class. */
+.hidden {
+    display: none;
+}
+
 .container {
     max-width: 700px;
     margin: 40px auto;

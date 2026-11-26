@@ -17,7 +17,7 @@
 
     <span id="queueCount">Pending: 0</span>
 
-    <button id="logoutButton" style="display:none;">
+    <button id="logoutButton" class="hidden">
         Logout
     </button>
 </div>
@@ -29,12 +29,11 @@
         <p>Offline Emergency Communication System</p>
     </header>
 
-    <div id="errorBanner" role="alert" aria-live="polite" style="display:none;"></div>
+    <div id="errorBanner" class="hidden" role="alert" aria-live="polite"></div>
 
     <div
         id="broadcastBanner"
-        class="broadcast-banner"
-        style="display:none;"
+        class="broadcast-banner hidden"
     >
         <div id="broadcastPriority"></div>
 
@@ -75,7 +74,7 @@
     </div>
 
 
-    <div id="chatBox" style="display:none;">
+    <div id="chatBox" class="hidden">
         <section class="sos-section">
             <select id="sosTypeInput">
                 <option value="flood">🌊 Flood</option>
@@ -123,7 +122,7 @@
             <div id="checkinStatus" class="checkin-status"></div>
         </section>
 
-        <section id="operatorPanel" class="operator-panel" style="display:none;">
+        <section id="operatorPanel" class="operator-panel hidden">
             <h2>Operator Dashboard</h2>
 
             <div class="operator-block">
@@ -179,7 +178,7 @@
                 <div id="checkinList" class="operator-list"></div>
             </div>
 
-            <div class="operator-block" id="adminBlock" style="display:none;">
+            <div class="operator-block hidden" id="adminBlock">
                 <h3>User Roles (Admin)</h3>
 
                 <button id="adminRefreshButton">
@@ -189,7 +188,7 @@
                 <div id="adminUserList" class="operator-list"></div>
             </div>
 
-            <div class="operator-block" id="auditBlock" style="display:none;">
+            <div class="operator-block hidden" id="auditBlock">
                 <h3>Audit Log</h3>
 
                 <button id="auditRefreshButton">

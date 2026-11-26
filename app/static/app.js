@@ -481,7 +481,7 @@ async function sendCheckIn(status) {
         // Link the check-in to a broadcast only while that
         // broadcast's banner is still on screen.
         const broadcastId =
-            broadcastBanner.style.display !== "none" &&
+            getComputedStyle(broadcastBanner).display !== "none" &&
             broadcastBanner.dataset.broadcastId
                 ? Number(broadcastBanner.dataset.broadcastId)
                 : null;

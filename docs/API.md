@@ -20,6 +20,17 @@ interactive documentation at `/docs` while the server is running.
   `Authorization: Bearer <token>`.
 - Logout: `POST /api/logout` invalidates the current session.
 - Current user: `GET /api/me`.
+- Sessions: `GET /api/sessions` lists your live sessions
+  (`token_preview` is the first 8 characters of the stored
+  token hash, plus `expires_at`); `DELETE /api/sessions`
+  revokes all of your other sessions and reports
+  `revoked_sessions`. Changing a user's role invalidates
+  all of that user's sessions.
+- WebSocket ticket: `POST /api/ws-ticket` exchanges the
+  current Bearer token for a one-time ticket (60 seconds,
+  single use) to connect with `/ws?ticket=...` instead of
+  putting the session token in the URL. The old
+  `/ws?token=...` path still works for older clients.
 
 ## Phase 3 security notes
 
@@ -30,8 +41,15 @@ interactive documentation at `/docs` while the server is running.
 - Rate limits return `429` with `Retry-After: 60`:
   login 10/minute per IP + username (tunable with
   `NIRAPODNET_LOGIN_RATE_LIMIT`), authenticated writes
-  120/minute per user, WebSocket 30 messages per 10
-  seconds per connection.
+  120/minute per user (tunable with
+  `NIRAPODNET_WRITE_RATE_LIMIT`), WebSocket 30 messages
+  per 10 seconds per connection. Registration is limited
+  to 30/hour per IP by default (tunable with
+  `NIRAPODNET_REGISTER_RATE_LIMIT`, `Retry-After: 3600`).
+  Failed logins and login/write rate-limit hits for
+  known accounts are written to the audit log; attempts
+  for unknown usernames cannot be attributed to an
+  account, so they are rate-limited but not logged.
 - `POST /messages`, `POST /api/sos`,
   `POST /api/broadcasts` and `POST /api/checkins`
   accept an optional `Idempotency-Key` header. Repeating
@@ -42,6 +60,18 @@ interactive documentation at `/docs` while the server is running.
   field. `GET /api/broadcasts/{id}/verify`
   (authenticated) reports `signature_present` and
   `valid` for a stored broadcast.
+- List endpoints take `limit` (default 100, maximum
+  500) and `offset` (default 0) and never return every
+  row: `GET /users`, `GET /api/admin/users`,
+  `GET /messages`, `GET /api/sos`, `GET /api/broadcasts`,
+  `GET /api/checkins`, `GET /api/checkins/me`.
+- The CSP no longer allows `'unsafe-inline'` (Phase 3
+  completion work): show/hide uses the `.hidden` class
+  in `style.css`, not inline `style` attributes.
+- End-to-end encryption is not implemented (accepted
+  limitation, user decision 2026-11-25, Path A):
+  messages are protected by TLS in transit only. See
+  `docs/SECURITY.md`.
 
 ### Roles
 
@@ -70,7 +100,11 @@ characters); without them, startup behaviour is unchanged.
 | `POST /api/login` | public | Log in, returns a session token |
 | `POST /api/logout` | any session | Log out |
 | `GET /api/me` | any session | Current user |
-| `GET /users`, `GET /api/admin/users` | admin | List users |
+| `GET /api/sessions` | any session | List your live sessions |
+| `DELETE /api/sessions` | any session | Revoke all your other sessions |
+| `POST /api/ws-ticket` | any session | One-time WebSocket ticket (60s, single use) |
+| `GET /api/admin/backup` | admin | Download a SQLite backup file |
+| `GET /users`, `GET /api/admin/users` | admin | List users (paginated) |
 | `PATCH /api/admin/users/{user_id}/role` | admin | Change a user's role |
 | `GET /api/rbac/user|rescue|operator|admin` | by tier | Role probe endpoints |
 | `POST /messages` | any role | Post a message (sender is taken from the session) |
@@ -136,8 +170,18 @@ Create body:
 
 ## WebSocket protocol
 
-Connect with `ws://<host>:8000/ws?token=<session token>`. An
-invalid or expired token closes the connection with code `1008`.
+Preferred: `POST /api/ws-ticket` with the Bearer token,
+then connect with `ws://<host>:8000/ws?ticket=<ticket>`.
+The ticket is single-use and expires in 60 seconds, so a
+ticket that lands in a server log is already useless.
+Legacy clients may still connect with
+`ws://<host>:8000/ws?token=<session token>`. An invalid or
+expired ticket/token closes the connection with code
+`1008`. The session behind a connection is re-checked on
+every message and while idle (30-second recheck), so
+logout, expiry or role-change revocation closes a live
+connection; a broken JSON frame returns an error frame
+instead of killing the socket.
 
 Client → server (chat message):
 

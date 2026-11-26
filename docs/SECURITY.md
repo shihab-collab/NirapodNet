@@ -13,9 +13,10 @@ public internet in the normal case.
   no-referrer`, a restrictive `Permissions-Policy`, and a
   Content-Security-Policy (`script-src 'self'`, `connect-src
   'self' ws: wss:`, `frame-ancestors 'none'`). `style-src`
-  keeps `'unsafe-inline'` because the template itself uses
-  inline `style` attributes for show/hide; removing those
-  attributes is a follow-up, not a silent UI break.
+  is `'self'` only since the Phase 3 completion work:
+  show/hide uses the `.hidden` class in `style.css`
+  instead of inline `style` attributes, so the CSP no
+  longer allows `'unsafe-inline'`.
   `Strict-Transport-Security` is sent only over HTTPS, so a
   plain-HTTP LAN deployment is not told to force HTTPS later.
 - **Session tokens are stored hashed:** the database holds
@@ -104,6 +105,20 @@ supported, but traffic on that LAN is then visible to
 anyone on the same network: that is a deployment choice,
 not something the code can fix without TLS.
 
+**LAN WSS test — passed 2026-11-25 (user's PC):** the
+server ran with a self-signed certificate for the LAN IP
+(`openssl req -x509`, CN and SAN `192.168.1.19`) and
+`NIRAPODNET_HTTPS=1`. A second device on the same WiFi
+(`192.168.1.2`) opened `https://192.168.1.19:8000`,
+accepted the self-signed certificate warning, registered,
+logged in, got a one-time WS ticket and connected — the
+server log shows `WebSocket /ws?ticket=... [accepted]`
+from `192.168.1.2`. SOS creation, check-ins, SOS status
+changes and broadcasts were then used from both devices
+(`192.168.1.19` and `192.168.1.2`). The certificate
+(`cert.pem`, `key.pem`) is never committed: it is ignored
+in `.gitignore`, and each deployment makes its own.
+
 ## Threat model
 
 Assumed attacker: someone on the same LAN, or someone
@@ -119,7 +134,7 @@ the signing key or an admin password.
 | Flood / DoS by one client | Write and WebSocket rate limits | No process-level or proxy-level limits; a LAN flood can still saturate the single server |
 | Duplicate SOS/broadcast on retry | Idempotency-Key, WS seq/ts, client_id dedup | Without Idempotency-Key, a retried POST still creates a second entity |
 | Tampered stored broadcast | HMAC signature + verify endpoint | HMAC is symmetric: verification goes through the server, which holds the key; this is not public-key verification |
-| XSS via message content | textContent rendering, control-character rejection, CSP | CSP keeps style 'unsafe-inline' (see above) |
+| XSS via message content | textContent rendering, control-character rejection, CSP | None known; CSP style-src is 'self' only since the Phase 3 completion work |
 | Clickjacking | X-Frame-Options + frame-ancestors 'none' | None known |
 | Session reuse after role change | Role change invalidates all sessions | A token is still usable until the role change happens |
 | Token in WebSocket URL | Documented; no change yet | Token may appear in logs; a header-based WS auth is a follow-up |
@@ -135,6 +150,13 @@ the signing key or an admin password.
   offline-first UX; that design is deferred, not
   pretended. Do not describe NirapodNet as
   "end-to-end encrypted" on the basis of Phase 3.
+  **Decision (2026-11-25, user chose Path A):** the
+  TLS-only limit is accepted as the Phase 3 outcome.
+  No end-to-end encryption code is written in Phase 3,
+  and this limit stays documented here, in README.md
+  and in PROGRESS.md. If end-to-end encryption is ever
+  needed, it is a new phase of work, not a hidden part
+  of Phase 3.
 - **Public-key broadcast verification is not
   implemented.** The HMAC signature proves, through the
   server, that stored fields match what the server
@@ -171,20 +193,82 @@ the signing key or an admin password.
 - Logging and Monitoring Failures: audit logs for
   critical actions (Phase 2) cover broadcasts, SOS,
   check-ins, role changes and bootstrap; failed logins
-  are not yet audited (follow-up).
+  and login/write rate-limit hits for known accounts
+  are now also audited (Phase 3 completion work).
+  Attempts for unknown usernames cannot be attributed
+  to an account, so they are rate-limited but not
+  audit-logged.
 - Server-Side Request Forgery: the app makes no
   outbound requests on behalf of users.
 
+## Audit fixes (2026-11-23, commit 91cb13a)
+
+A ten-item security audit found further issues after
+the Phase 3 core work; they were fixed and pushed as
+one commit (owner `shihab-collab`):
+
+- **Plain-HTTP warning:** the server prints a warning
+  at startup unless `NIRAPODNET_HTTPS=1`, and the
+  README has a "Run on LAN over HTTPS" section.
+- **Registration rate limit:** 30/hour per IP by
+  default (`NIRAPODNET_REGISTER_RATE_LIMIT`), on both
+  `/users` and `/api/register`.
+- **WebSocket tickets:** the frontend exchanges its
+  Bearer token for a one-time ticket
+  (`POST /api/ws-ticket`, 60 seconds, single use) and
+  connects with `/ws?ticket=...` instead of the
+  session token in the URL.
+- **Pagination:** every list endpoint takes
+  `limit`/`offset` (limit capped at 500), and the
+  N+1 sender lookups were removed.
+- **SQLite WAL:** journal mode WAL with a 30-second
+  busy timeout; `check_same_thread` is only passed
+  for SQLite, so a PostgreSQL URL no longer crashes
+  engine creation.
+- **Sessions:** `GET /api/sessions` lists live
+  sessions, `DELETE /api/sessions` revokes all other
+  sessions; a WebSocket is re-checked on every
+  message and closed when its session is revoked or
+  expires, including while idle (30-second recheck).
+- **Admin backup:** `GET /api/admin/backup` returns
+  a consistent SQLite backup file (admin only).
+- **Atomic audit:** SOS, broadcast, check-in and role
+  changes commit the action and its audit entry
+  together, so a crash cannot leave an action
+  without its audit record.
+- **Real SECURITY.md:** the repository root
+  `SECURITY.md` is a real policy now (supported
+  version is `main`), not the template with fake
+  version numbers.
+
 ## Open follow-ups (not hidden)
 
-1. Per-user end-to-end encryption design (deferred,
-   see above).
+1. Per-user end-to-end encryption design. **Accepted
+   limitation (2026-11-25, user decision, Path A):**
+   not built in Phase 3; revisit as a new phase only
+   if it is ever needed (see above).
 2. Public-key (asymmetric) broadcast signing, to
-   replace or complement HMAC.
+   replace or complement HMAC. **Kept as HMAC in
+   Phase 3:** the server is the only signer, so a
+   symmetric signature fits; public-key verification
+   is deferred to a later phase.
 3. Header-based WebSocket authentication, so the
-   token does not travel in the URL.
+   token does not travel in the URL. **Partly done
+   (2026-11-23):** the frontend now uses a one-time
+   WS ticket (60 seconds, single use) instead of the
+   session token in the URL; the legacy `/ws?token=`
+   path still works for older clients, so the token
+   can still appear in logs for those clients.
 4. Audit logging for failed logins and rate-limit
-   hits.
+   hits. **Done in the Phase 3 completion work:**
+   failed logins and login/write rate-limit hits for
+   known accounts are written to the audit log (see
+   "Logging" below). Attempts for unknown usernames
+   cannot be attributed to an account, so they are
+   rate-limited but not audit-logged.
 5. Removing inline `style` attributes so CSP can
-   drop `'unsafe-inline'`.
+   drop `'unsafe-inline'`. **Done in the Phase 3
+   completion work:** the template uses a `.hidden`
+   class instead of `style` attributes, and the CSP
+   no longer allows `'unsafe-inline'`.
 6. A real penetration test (Phase 4).

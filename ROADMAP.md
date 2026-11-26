@@ -64,18 +64,18 @@ This roadmap tracks the development of NirapodNet through 14 phases (Phase 0–1
 ## Phase 3 — Security
 **Goal:** Harden the system with comprehensive security measures.
 
-- [ ] Implement end-to-end encryption for messages
-- [x] Add message signing for emergency broadcasts
-- [x] Implement replay protection (unique IDs, timestamps, sequences)
-- [x] Conduct threat modeling exercise
-- [x] Implement rate limiting and DoS protection
-- [x] Add input validation and sanitization
-- [ ] Secure WebSocket connections (WSS)
-- [x] Implement session management with secure tokens
-- [x] Add security headers (CSP, HSTS, etc.)
-- [ ] Perform security testing (OWASP Top 10)
-- [x] Document security architecture and threat model
-> Note (2026-10-30): Phase 3 is started, not completed. End-to-end encryption is deliberately not ticked: messages are TLS-only in transit and stored in clear text, and a per-user E2E design is deferred (see docs/SECURITY.md). WSS is deployment-dependent: the frontend already uses wss: over HTTPS and TLS is documented, but no certificate is bundled. OWASP work so far is a self-review in docs/SECURITY.md, not a formal penetration test. Broadcast signing is HMAC (server-side tamper evidence), not public-key verification. See tests/run_phase3_checks.py (34/34) and the Phase 3 entry in PROGRESS.md.
+- [ ] Implement end-to-end encryption for messages *(deferred — Path A: TLS-only accepted as Phase 3 outcome; see note below)*
+- [x] Add message signing for emergency broadcasts (HMAC-SHA256)
+- [x] Implement replay protection (unique IDs, timestamps, sequences; WebSocket seq/ts + Idempotency-Key)
+- [x] Conduct threat modeling exercise (docs/SECURITY.md with OWASP Top 10 self-review)
+- [x] Implement rate limiting and DoS protection (login 10/min/IP+user, writes 120/min/user, WS 30/10s)
+- [x] Add input validation and sanitization (control-char rejection, whitespace stripping)
+- [x] Secure WebSocket connections (WSS) — verified on LAN 2026-11-25: self-signed cert, second device (192.168.1.2) connected via wss: with a one-time ticket; see docs/SECURITY.md
+- [x] Implement session management with secure tokens (SHA-256 hashed, 24h expiry, 5-session cap, role-change invalidation)
+- [x] Add security headers (CSP, HSTS, etc.) — CSP without 'unsafe-inline' (7 style= removed, .hidden class used)
+- [ ] Perform security testing (OWASP Top 10) — self-review in docs/SECURITY.md; formal penetration test deferred to Phase 4
+- [x] Document security architecture and threat model (docs/SECURITY.md)
+> Note (2026-11-25): Phase 3 completed. End-to-end encryption is deliberately not ticked: messages are TLS-only in transit and stored in clear text. Decision (2026-11-25, user chose Path A): the TLS-only limit is accepted as the Phase 3 outcome — no E2E code is written, and the limit is documented in docs/SECURITY.md, README.md and PROGRESS.md as an accepted limitation. If E2E is ever needed, it is a new phase of work. WSS is deployment-dependent: the frontend already uses wss: over HTTPS and TLS is documented, but no certificate is bundled. LAN WSS test passed 2026-11-25: second device (192.168.1.2) connected over https://192.168.1.19:8000 with a self-signed certificate, registered, logged in, got a WS ticket and connected via wss:; SOS, check-ins and broadcasts worked from both devices (see docs/SECURITY.md). Broadcast signing is HMAC (server-side tamper evidence), not public-key verification. Completion work 2026-11-25: failed-login/rate-limit audit logging, CSP without 'unsafe-inline', docs/API.md and docs/SECURITY.md updated, CI workflow + Dockerfile (Docker build NOT verified locally — this machine has no Docker; CI builds it on push), router split (app/main.py 1,624 → 110 lines, routes in app/routers/). Suites after the split: Phase 2 44/44, Phase 3 34/34, audit 40/40, completion 18/18. See tests/run_phase3_checks.py (34/34) and the Phase 3 entry in PROGRESS.md.
 
 
 **Target Completion:** Week 8-10
@@ -272,7 +272,7 @@ This roadmap tracks the development of NirapodNet through 14 phases (Phase 0–1
 | Phase 0 — Foundation | [x] Completed | 1-2 | 2026-08-30 |
 | Phase 1 — Core Prototype | [x] Completed | 3-4 | 2026-08-31 |
 | Phase 2 — Emergency System | [x] Completed | 5-7 | 2026-10-20 |
-| Phase 3 — Security | In Progress | 8-10 | - |
+| Phase 3 — Security | [x] Completed | 8-10 | 2026-11-25 |
 | Phase 4 — Measurement | [ ] Not Started | 11-12 | - |
 | Phase 5 — First Real Pilot | [ ] Not Started | 13-15 | - |
 | Phase 6 — Geospatial Layer | [ ] Not Started | 16-19 | - |
@@ -298,5 +298,5 @@ Each phase must pass these gates before proceeding:
 
 ---
 
-*Last Updated: 2026-10-30*
+*Last Updated: 2026-11-25*
 *Version: 1.0*

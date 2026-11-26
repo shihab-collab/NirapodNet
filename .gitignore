@@ -228,3 +228,11 @@ nirapodnet.db
 *.db
 *.sqlite
 *.sqlite3
+
+# TLS certificates and keys (Phase 3): never commit these.
+# Each deployment makes its own self-signed certificate; the
+# private key must never reach the repository.
+cert.pem
+key.pem
+*.pem
+*.key
